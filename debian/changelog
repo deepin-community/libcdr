@@ -1,3 +1,9 @@
+libcdr (0.1.6-3) unstable; urgency=medium
+
+  * rebuild.
+
+ -- Heng Liu <liuheng@deepin.org>  Sat, 22 Oct 2022 10:33:47 +0800
+
 libcdr (0.1.6-2) unstable; urgency=medium
 
   * debian/patches/no-icu-boolean.diff: prepare for ICU 68 transition
