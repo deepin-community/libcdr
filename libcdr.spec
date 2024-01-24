@@ -1,5 +1,5 @@
 %define name libcdr
-%define version 0.1.6
+%define version 0.1.7
 %define RELEASE 1
 %define release     %{?CUSTOM_RELEASE} %{!?CUSTOM_RELEASE:%RELEASE}
 

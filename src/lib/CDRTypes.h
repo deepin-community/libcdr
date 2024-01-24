@@ -53,10 +53,14 @@ struct CDRBox
 struct CDRColor
 {
   unsigned short m_colorModel;
+  unsigned short m_colorPalette;
   unsigned m_colorValue;
-  CDRColor() : m_colorModel(0), m_colorValue(0) {}
+  CDRColor(unsigned short colorModel, unsigned short colorPalette, unsigned colorValue)
+    : m_colorModel(colorModel), m_colorPalette(colorPalette), m_colorValue(colorValue) {}
+  CDRColor()
+    : m_colorModel(0), m_colorPalette(0), m_colorValue(0) {}
   CDRColor(unsigned short colorModel, unsigned colorValue)
-    : m_colorModel(colorModel), m_colorValue(colorValue) {}
+    : m_colorModel(colorModel), m_colorPalette(0), m_colorValue(colorValue) {}
 };
 
 struct CDRGradientStop
@@ -370,7 +374,7 @@ struct CDRFont
   CDRFont(const librevenge::RVNGString &name, unsigned short encoding)
     : m_name(name), m_encoding(encoding) {}
   CDRFont(const CDRFont &font) = default;
-  CDRFont& operator=(const CDRFont &font) = default;
+  CDRFont &operator=(const CDRFont &font) = default;
   librevenge::RVNGString m_name;
   unsigned short m_encoding;
 };
