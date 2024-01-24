@@ -17,6 +17,9 @@
 #ifndef BOOST_ALL_NO_LIB
 #define BOOST_ALL_NO_LIB 1
 #endif
+#ifndef BOOST_BIND_GLOBAL_PLACEHOLDERS
+#define BOOST_BIND_GLOBAL_PLACEHOLDERS 1
+#endif
 #include <boost/algorithm/string.hpp>
 #include <boost/optional.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -105,10 +108,13 @@ static void processNameForEncoding(librevenge::RVNGString &name, unsigned short 
 static int parseColourString(const char *colourString, libcdr::CDRColor &colour, double &opacity)
 {
   using namespace boost::spirit::qi;
+
   bool bRes = false;
 
-  boost::optional<unsigned> colourModel;
-  unsigned val0, val1, val2, val3, val4;
+  boost::optional<unsigned> colourModel, colourPalette;
+  std::vector<std::string> fallbackColours;
+  std::string rest;
+  std::vector<unsigned> val;
 
   if (colourString)
   {
@@ -116,35 +122,104 @@ static int parseColourString(const char *colourString, libcdr::CDRColor &colour,
     cmodel.add
     ("CMYK", 2)
     ("CMYK255", 3)
+    ("RGB255", 5)
+    ("HSB", 6)
+    ("HLS", 7)
+    ("GRAY255", 9)
+    ("YIQ255", 11)
+    ("LAB", 12)
+    ("PANTONEHX", 14)
+    ("LAB255", 18)
+    ("REGCOLOR", 20)
+    ("SPOT", 25)
+    ;
+    symbols<char, unsigned> cpalette;
+    cpalette.add
+    ("USER", 5)
+    ("FOCTONE", 8)
+    ("DUPONT", 9)
+    ("TOYO", 10)
+    ("DIC", 11)
+    ("PAN_HEX", 12)
+    ("HKS", 0x17)
+    ("HKS_K", 0x1a)
+    ("HKS_N", 0x1b)
+    ("HKS_Z", 0x1c)
+    ("HKS_E", 0x1d)
     ;
     auto it = colourString;
     const auto end = it + std::strlen(it);
     bRes = phrase_parse(it, end,
                         //  Begin grammar
                         (
-                          (cmodel | omit[+alnum]) >> -lit(',')
-                          >> omit[+alnum] >> -lit(',')
-                          >> uint_ >> -lit(',')
-                          >> uint_ >> -lit(',')
-                          >> uint_ >> -lit(',')
-                          >> uint_ >> -lit(',')
-                          >> uint_ >> -lit(',')
-                          >> (repeat(8)[alnum] >> '-' >> repeat(3)[repeat(4)[alnum] >> '-'] >> repeat(12)[alnum])
+                          (cmodel | omit[+iso8859_1::alnum]) >> lit(',')
+                          >> (cpalette | omit[+iso8859_1::alnum]) >> lit(',')
+                          >> *(uint_ >> lit(','))
+                          >> omit[(repeat(8)[iso8859_1::xdigit] >> '-' >> repeat(3)[repeat(4)[iso8859_1::xdigit] >> '-'] >> repeat(12)[iso8859_1::xdigit])]
+                          >> -(lit(',')
+                               >> -(lit("~,") >> omit[+(iso8859_1::char_ - lit(','))] >> lit(',') >> omit[uint_] >> lit(',')
+                                    >> repeat[+(iso8859_1::char_ - lit(",~,")) >> lit(",~,")])
+                               >> omit[*iso8859_1::char_])
                         ),
                         //  End grammar
-                        space,
-                        colourModel, val0, val1, val2, val3, val4)
+                        iso8859_1::space,
+                        colourModel, colourPalette, val, fallbackColours)
            && it == end;
   }
 
   if (!bRes)
+  {
+    CDR_DEBUG_MSG(("parseColourString --> spirit grammar failed with string: %s\n", colourString));
     return -1;
+  }
+
+  // If fallback colours exist, use the first of them, since we are more likely
+  // to get them right then the paletted spot colours
+  if (!fallbackColours.empty())
+    return parseColourString(fallbackColours.begin()->c_str(), colour, opacity);
 
   if (colourModel)
     colour.m_colorModel = get(colourModel);
-  colour.m_colorValue = val0 | (val1 << 8) | (val2 << 16) | (val3 << 24);
-  opacity = (double)val4 / 100.0;
 
+  if (colourPalette)
+    colour.m_colorPalette = get(colourPalette);
+
+  if (val.size() >= 5)
+  {
+    colour.m_colorValue = val[0] | (val[1] << 8) | (val[2] << 16) | (val[3] << 24);
+    opacity = (double)val[4] / 100.0;
+  }
+  else if (val.size() >= 4)
+  {
+    if (colour.m_colorModel == 5)
+      colour.m_colorValue = val[2] | (val[1] << 8) | (val[0] << 16);
+    else if (colour.m_colorModel == 6 || colour.m_colorModel == 7)
+      colour.m_colorValue = val[0] | (val[1] << 16) | (val[2] << 24);
+    else
+      colour.m_colorValue = val[0] | (val[1] << 8) | (val[2] << 16);
+    opacity = (double)val[3] / 100.0;
+  }
+  else if (val.size() >= 2)
+  {
+    if (colour.m_colorModel == 25 || colour.m_colorModel == 14)
+      colour.m_colorValue = (val[1] << 16) | val[0];
+    else
+    {
+      colour.m_colorValue = val[0];
+      opacity = (double)val[1] / 100.0;
+    }
+  }
+  else if (val.size() >= 1)
+  {
+    colour.m_colorValue = val[0];
+    opacity = 1.0;
+  }
+  else
+  {
+    CDR_DEBUG_MSG(("parseColourString --> bRes %i, size %lu, colorModel %u, colorValue 0x%.8x bkp: %lu\n", bRes, val.size(), colour.m_colorModel, colour.m_colorValue, fallbackColours.size()));
+    return 0;
+  }
+  CDR_DEBUG_MSG(("parseColourString --> bRes %i, size %lu, colorModel %u, colorValue 0x%.8x blp: %lu\n", bRes, val.size(), colour.m_colorModel, colour.m_colorValue, fallbackColours.size()));
   return 1;
 }
 
@@ -688,478 +763,53 @@ double libcdr::CDRParser::readRectCoord(librevenge::RVNGInputStream *input)
 
 libcdr::CDRColor libcdr::CDRParser::readColor(librevenge::RVNGInputStream *input)
 {
-  unsigned short colorModel = 0;
-  unsigned colorValue = 0;
+  libcdr::CDRColor tmpColor;
+
   if (m_version >= 500)
   {
-    colorModel = readU16(input);
-    if (colorModel == 0x01 && m_version >= 1300)
-      colorModel = 0x19;
-    if (colorModel == 0x19 || colorModel == 0x1e)
+    tmpColor.m_colorModel = readU16(input);
+    if (tmpColor.m_colorModel == 0x01 && m_version >= 1300)
+      tmpColor.m_colorModel = 0x19;
+    /* A bug in CorelDraw x7 creates a corrupted file. If we meet colorModel of 0x1e,
+     * it is actually colorModel 0x19 and paletteId 0x1e */
+    if (tmpColor.m_colorModel == 0x1e)
     {
-      unsigned char r = 0;
-      unsigned char g = 0;
-      unsigned char b = 0;
-      unsigned char c = 0;
-      unsigned char m = 0;
-      unsigned char y = 0;
-      unsigned char k = 100;
-      unsigned short paletteID = 0;
-      /* A bug in CorelDraw x7 creates a corrupted file. If we meet colorModel of 0x1e,
-       * it is actually colorModel 0x19 and paletteId 0x1e */
-      if (colorModel == 0x1e)
-      {
-        colorModel = 0x19;
-        paletteID = 0x1e;
-      }
-      else
-      {
-        paletteID = readU16(input);
-        input->seek(4, librevenge::RVNG_SEEK_CUR);
-      }
-      unsigned short ix = readU16(input);
-      unsigned short tint = readU16(input);
-      switch (paletteID)
-      {
-      case 0x03:
-        if (ix > 0
-            && ix <= sizeof(palette_19_03_C)/sizeof(palette_19_03_C[0])
-            && ix <= sizeof(palette_19_03_M)/sizeof(palette_19_03_M[0])
-            && ix <= sizeof(palette_19_03_Y)/sizeof(palette_19_03_Y[0])
-            && ix <= sizeof(palette_19_03_K)/sizeof(palette_19_03_K[0]))
-        {
-          c = palette_19_03_C[ix-1];
-          m = palette_19_03_M[ix-1];
-          y = palette_19_03_Y[ix-1];
-          k = palette_19_03_K[ix-1];
-        }
-        break;
-      case 0x08:
-        if (ix > 0
-            && ix <= sizeof(palette_19_08_C)/sizeof(palette_19_08_C[0])
-            && ix <= sizeof(palette_19_08_M)/sizeof(palette_19_08_M[0])
-            && ix <= sizeof(palette_19_08_Y)/sizeof(palette_19_08_Y[0])
-            && ix <= sizeof(palette_19_08_K)/sizeof(palette_19_08_K[0]))
-        {
-          c = palette_19_08_C[ix-1];
-          m = palette_19_08_M[ix-1];
-          y = palette_19_08_Y[ix-1];
-          k = palette_19_08_K[ix-1];
-        }
-        break;
-      case 0x09:
-        if (ix > 0
-            && ix <= sizeof(palette_19_09_L)/sizeof(palette_19_09_L[0])
-            && ix <= sizeof(palette_19_09_A)/sizeof(palette_19_09_A[0])
-            && ix <= sizeof(palette_19_09_B)/sizeof(palette_19_09_B[0]))
-        {
-          colorValue = palette_19_09_B[ix-1];
-          colorValue <<= 8;
-          colorValue |= palette_19_09_A[ix-1];
-          colorValue <<= 8;
-          colorValue |= palette_19_09_L[ix-1];
-        }
-        break;
-      case 0x0a:
-        if (ix > 0
-            && ix <= sizeof(palette_19_0A_C)/sizeof(palette_19_0A_C[0])
-            && ix <= sizeof(palette_19_0A_M)/sizeof(palette_19_0A_M[0])
-            && ix <= sizeof(palette_19_0A_Y)/sizeof(palette_19_0A_Y[0])
-            && ix <= sizeof(palette_19_0A_K)/sizeof(palette_19_0A_K[0]))
-        {
-          c = palette_19_0A_C[ix-1];
-          m = palette_19_0A_M[ix-1];
-          y = palette_19_0A_Y[ix-1];
-          k = palette_19_0A_K[ix-1];
-        }
-        break;
-      case 0x0b:
-        if (ix > 0
-            && ix <= sizeof(palette_19_0B_C)/sizeof(palette_19_0B_C[0])
-            && ix <= sizeof(palette_19_0B_M)/sizeof(palette_19_0B_M[0])
-            && ix <= sizeof(palette_19_0B_Y)/sizeof(palette_19_0B_Y[0])
-            && ix <= sizeof(palette_19_0B_K)/sizeof(palette_19_0B_K[0]))
-        {
-          c = palette_19_0B_C[ix-1];
-          m = palette_19_0B_M[ix-1];
-          y = palette_19_0B_Y[ix-1];
-          k = palette_19_0B_K[ix-1];
-        }
-        break;
-      case 0x11:
-        if (ix > 0
-            && ix <= sizeof(palette_19_11_C)/sizeof(palette_19_11_C[0])
-            && ix <= sizeof(palette_19_11_M)/sizeof(palette_19_11_M[0])
-            && ix <= sizeof(palette_19_11_Y)/sizeof(palette_19_11_Y[0])
-            && ix <= sizeof(palette_19_11_K)/sizeof(palette_19_11_K[0]))
-        {
-          c = palette_19_11_C[ix-1];
-          m = palette_19_11_M[ix-1];
-          y = palette_19_11_Y[ix-1];
-          k = palette_19_11_K[ix-1];
-        }
-        break;
-      case 0x12:
-        if (ix > 0
-            && ix <= sizeof(palette_19_12_C)/sizeof(palette_19_12_C[0])
-            && ix <= sizeof(palette_19_12_M)/sizeof(palette_19_12_M[0])
-            && ix <= sizeof(palette_19_12_Y)/sizeof(palette_19_12_Y[0])
-            && ix <= sizeof(palette_19_12_K)/sizeof(palette_19_12_K[0]))
-        {
-          c = palette_19_12_C[ix-1];
-          m = palette_19_12_M[ix-1];
-          y = palette_19_12_Y[ix-1];
-          k = palette_19_12_K[ix-1];
-        }
-        break;
-      case 0x14:
-        if (ix > 0
-            && ix <= sizeof(palette_19_14_C)/sizeof(palette_19_14_C[0])
-            && ix <= sizeof(palette_19_14_M)/sizeof(palette_19_14_M[0])
-            && ix <= sizeof(palette_19_14_Y)/sizeof(palette_19_14_Y[0])
-            && ix <= sizeof(palette_19_14_K)/sizeof(palette_19_14_K[0]))
-        {
-          c = palette_19_14_C[ix-1];
-          m = palette_19_14_M[ix-1];
-          y = palette_19_14_Y[ix-1];
-          k = palette_19_14_K[ix-1];
-        }
-        break;
-      case 0x15:
-        if (ix > 0
-            && ix <= sizeof(palette_19_15_C)/sizeof(palette_19_15_C[0])
-            && ix <= sizeof(palette_19_15_M)/sizeof(palette_19_15_M[0])
-            && ix <= sizeof(palette_19_15_Y)/sizeof(palette_19_15_Y[0])
-            && ix <= sizeof(palette_19_15_K)/sizeof(palette_19_15_K[0]))
-        {
-          c = palette_19_15_C[ix-1];
-          m = palette_19_15_M[ix-1];
-          y = palette_19_15_Y[ix-1];
-          k = palette_19_15_K[ix-1];
-        }
-        break;
-      case 0x16:
-        if (ix > 0
-            && ix <= sizeof(palette_19_16_C)/sizeof(palette_19_16_C[0])
-            && ix <= sizeof(palette_19_16_M)/sizeof(palette_19_16_M[0])
-            && ix <= sizeof(palette_19_16_Y)/sizeof(palette_19_16_Y[0])
-            && ix <= sizeof(palette_19_16_K)/sizeof(palette_19_16_K[0]))
-        {
-          c = palette_19_16_C[ix-1];
-          m = palette_19_16_M[ix-1];
-          y = palette_19_16_Y[ix-1];
-          k = palette_19_16_K[ix-1];
-        }
-        break;
-      case 0x17:
-        if (ix > 0
-            && ix <= sizeof(palette_19_17_C)/sizeof(palette_19_17_C[0])
-            && ix <= sizeof(palette_19_17_M)/sizeof(palette_19_17_M[0])
-            && ix <= sizeof(palette_19_17_Y)/sizeof(palette_19_17_Y[0])
-            && ix <= sizeof(palette_19_17_K)/sizeof(palette_19_17_K[0]))
-        {
-          c = palette_19_17_C[ix-1];
-          m = palette_19_17_M[ix-1];
-          y = palette_19_17_Y[ix-1];
-          k = palette_19_17_K[ix-1];
-        }
-        break;
-      case 0x1a:
-        if (ix < sizeof(palette_19_1A_C)/sizeof(palette_19_1A_C[0])
-            && ix < sizeof(palette_19_1A_M)/sizeof(palette_19_1A_M[0])
-            && ix < sizeof(palette_19_1A_Y)/sizeof(palette_19_1A_Y[0])
-            && ix < sizeof(palette_19_1A_K)/sizeof(palette_19_1A_K[0]))
-        {
-          c = palette_19_1A_C[ix];
-          m = palette_19_1A_M[ix];
-          y = palette_19_1A_Y[ix];
-          k = palette_19_1A_K[ix];
-        }
-        break;
-      case 0x1b:
-        if (ix < sizeof(palette_19_1B_C)/sizeof(palette_19_1B_C[0])
-            && ix < sizeof(palette_19_1B_M)/sizeof(palette_19_1B_M[0])
-            && ix < sizeof(palette_19_1B_Y)/sizeof(palette_19_1B_Y[0])
-            && ix < sizeof(palette_19_1B_K)/sizeof(palette_19_1B_K[0]))
-        {
-          c = palette_19_1B_C[ix];
-          m = palette_19_1B_M[ix];
-          y = palette_19_1B_Y[ix];
-          k = palette_19_1B_K[ix];
-        }
-        break;
-      case 0x1c:
-        if (ix < sizeof(palette_19_1C_C)/sizeof(palette_19_1C_C[0])
-            && ix < sizeof(palette_19_1C_M)/sizeof(palette_19_1C_M[0])
-            && ix < sizeof(palette_19_1C_Y)/sizeof(palette_19_1C_Y[0])
-            && ix < sizeof(palette_19_1C_K)/sizeof(palette_19_1C_K[0]))
-        {
-          c = palette_19_1C_C[ix];
-          m = palette_19_1C_M[ix];
-          y = palette_19_1C_Y[ix];
-          k = palette_19_1C_K[ix];
-        }
-        break;
-      case 0x1d:
-        if (ix < sizeof(palette_19_1D_C)/sizeof(palette_19_1D_C[0])
-            && ix < sizeof(palette_19_1D_M)/sizeof(palette_19_1D_M[0])
-            && ix < sizeof(palette_19_1D_Y)/sizeof(palette_19_1D_Y[0])
-            && ix < sizeof(palette_19_1D_K)/sizeof(palette_19_1D_K[0]))
-        {
-          c = palette_19_1D_C[ix];
-          m = palette_19_1D_M[ix];
-          y = palette_19_1D_Y[ix];
-          k = palette_19_1D_K[ix];
-        }
-        break;
-      case 0x1e:
-        if (ix > 0
-            && ix <= sizeof(palette_19_1E_R)/sizeof(palette_19_1E_R[0])
-            && ix <= sizeof(palette_19_1E_G)/sizeof(palette_19_1E_G[0])
-            && ix <= sizeof(palette_19_1E_B)/sizeof(palette_19_1E_B[0]))
-        {
-          r = palette_19_1E_R[ix-1];
-          g = palette_19_1E_G[ix-1];
-          b = palette_19_1E_B[ix-1];
-        }
-        break;
-      case 0x1f:
-        if (ix > 0
-            && ix <= sizeof(palette_19_1F_R)/sizeof(palette_19_1F_R[0])
-            && ix <= sizeof(palette_19_1F_G)/sizeof(palette_19_1F_G[0])
-            && ix <= sizeof(palette_19_1F_B)/sizeof(palette_19_1F_B[0]))
-        {
-          r = palette_19_1F_R[ix-1];
-          g = palette_19_1F_G[ix-1];
-          b = palette_19_1F_B[ix-1];
-        }
-        break;
-      case 0x20:
-        if (ix > 0
-            && ix <= sizeof(palette_19_20_R)/sizeof(palette_19_20_R[0])
-            && ix <= sizeof(palette_19_20_G)/sizeof(palette_19_20_G[0])
-            && ix <= sizeof(palette_19_20_B)/sizeof(palette_19_20_B[0]))
-        {
-          r = palette_19_20_R[ix-1];
-          g = palette_19_20_G[ix-1];
-          b = palette_19_20_B[ix-1];
-        }
-        break;
-      case 0x23:
-        if (ix > 0
-            && ix <= sizeof(palette_19_23_C)/sizeof(palette_19_23_C[0])
-            && ix <= sizeof(palette_19_23_M)/sizeof(palette_19_23_M[0])
-            && ix <= sizeof(palette_19_23_Y)/sizeof(palette_19_23_Y[0])
-            && ix <= sizeof(palette_19_23_K)/sizeof(palette_19_23_K[0]))
-        {
-          c = palette_19_23_C[ix-1];
-          m = palette_19_23_M[ix-1];
-          y = palette_19_23_Y[ix-1];
-          k = palette_19_23_K[ix-1];
-        }
-        break;
-      case 0x24:
-        if (ix > 0
-            && ix <= sizeof(palette_19_24_C)/sizeof(palette_19_24_C[0])
-            && ix <= sizeof(palette_19_24_M)/sizeof(palette_19_24_M[0])
-            && ix <= sizeof(palette_19_24_Y)/sizeof(palette_19_24_Y[0])
-            && ix <= sizeof(palette_19_24_K)/sizeof(palette_19_24_K[0]))
-        {
-          c = palette_19_24_C[ix-1];
-          m = palette_19_24_M[ix-1];
-          y = palette_19_24_Y[ix-1];
-          k = palette_19_24_K[ix-1];
-        }
-        break;
-      case 0x25:
-        if (ix > 0
-            && ix <= sizeof(palette_19_25_C)/sizeof(palette_19_25_C[0])
-            && ix <= sizeof(palette_19_25_M)/sizeof(palette_19_25_M[0])
-            && ix <= sizeof(palette_19_25_Y)/sizeof(palette_19_25_Y[0])
-            && ix <= sizeof(palette_19_25_K)/sizeof(palette_19_25_K[0]))
-        {
-          c = palette_19_25_C[ix-1];
-          m = palette_19_25_M[ix-1];
-          y = palette_19_25_Y[ix-1];
-          k = palette_19_25_K[ix-1];
-        }
-        break;
-      default:
-        colorValue = tint;
-        colorValue <<= 16;
-        colorValue |= ix;
-        break;
-      }
-
-      switch (paletteID)
-      {
-      case 0x03:
-      case 0x08:
-      case 0x0a:
-      case 0x0b:
-      case 0x11:
-      case 0x12:
-      case 0x14:
-      case 0x15:
-      case 0x16:
-      case 0x17:
-      case 0x1a:
-      case 0x1b:
-      case 0x1c:
-      case 0x1d:
-      case 0x23:
-      case 0x24:
-      case 0x25:
-      {
-        colorModel = 0x02; // CMYK100
-        unsigned cyan = (unsigned)tint * (unsigned)c / 100;
-        unsigned magenta = (unsigned)tint * (unsigned)m / 100;
-        unsigned yellow = (unsigned)tint * (unsigned)y / 100;
-        unsigned black = (unsigned)tint * (unsigned)k / 100;
-        colorValue = (black & 0xff);
-        colorValue <<= 8;
-        colorValue |= (yellow & 0xff);
-        colorValue <<= 8;
-        colorValue |= (magenta & 0xff);
-        colorValue <<= 8;
-        colorValue |= (cyan & 0xff);
-        break;
-      }
-      case 0x1e:
-      case 0x1f:
-      case 0x20:
-      {
-        colorModel = 0x05; // RGB
-        unsigned red = (unsigned)tint * (unsigned)r + 255 * (100 - tint);
-        unsigned green = (unsigned)tint * (unsigned)g + 255 * (100 - tint);
-        unsigned blue = (unsigned)tint * (unsigned)b + 255 * (100 - tint);
-        red /= 100;
-        green /= 100;
-        blue /= 100;
-        colorValue = (red & 0xff);
-        colorValue <<= 8;
-        colorValue |= (green & 0xff);
-        colorValue <<= 8;
-        colorValue |= (blue & 0xff);
-        break;
-      }
-      case 0x09:
-        colorModel = 0x12; // L*a*b
-        break;
-      default:
-        break;
-      }
-    }
-    else if (colorModel == 0x0e)
-    {
-      unsigned short paletteID = readU16(input);
-      input->seek(4, librevenge::RVNG_SEEK_CUR);
-      unsigned short ix = readU16(input);
-      unsigned short tint = readU16(input);
-      switch (paletteID)
-      {
-      case 0x0c:
-        if (ix > 0
-            && ix <= sizeof(palette_0E_0C_L)/sizeof(palette_0E_0C_L[0])
-            && ix <= sizeof(palette_0E_0C_A)/sizeof(palette_0E_0C_A[0])
-            && ix <= sizeof(palette_0E_0C_B)/sizeof(palette_0E_0C_B[0]))
-        {
-          colorValue = palette_0E_0C_B[ix-1];
-          colorValue <<= 8;
-          colorValue |= palette_0E_0C_A[ix-1];
-          colorValue <<= 8;
-          colorValue |= palette_0E_0C_L[ix-1];
-        }
-        break;
-      case 0x18:
-        if (ix > 0
-            && ix <= sizeof(palette_0E_18_L)/sizeof(palette_0E_18_L[0])
-            && ix <= sizeof(palette_0E_18_A)/sizeof(palette_0E_18_A[0])
-            && ix <= sizeof(palette_0E_18_B)/sizeof(palette_0E_18_B[0]))
-        {
-          colorValue = palette_0E_18_B[ix-1];
-          colorValue <<= 8;
-          colorValue |= palette_0E_18_A[ix-1];
-          colorValue <<= 8;
-          colorValue |= palette_0E_18_L[ix-1];
-        }
-        break;
-      case 0x21:
-        if (ix > 0
-            && ix <= sizeof(palette_0E_21_L)/sizeof(palette_0E_21_L[0])
-            && ix <= sizeof(palette_0E_21_A)/sizeof(palette_0E_21_A[0])
-            && ix <= sizeof(palette_0E_21_B)/sizeof(palette_0E_21_B[0]))
-        {
-          colorValue = palette_0E_21_B[ix-1];
-          colorValue <<= 8;
-          colorValue |= palette_0E_21_A[ix-1];
-          colorValue <<= 8;
-          colorValue |= palette_0E_21_L[ix-1];
-        }
-        break;
-      case 0x22:
-        if (ix > 0
-            && ix <= sizeof(palette_0E_22_L)/sizeof(palette_0E_22_L[0])
-            && ix <= sizeof(palette_0E_22_A)/sizeof(palette_0E_22_A[0])
-            && ix <= sizeof(palette_0E_22_B)/sizeof(palette_0E_22_B[0]))
-        {
-          colorValue = palette_0E_22_B[ix-1];
-          colorValue <<= 8;
-          colorValue |= palette_0E_22_A[ix-1];
-          colorValue <<= 8;
-          colorValue |= palette_0E_22_L[ix-1];
-        }
-        break;
-      default:
-        colorValue = tint;
-        colorValue <<= 16;
-        colorValue |= ix;
-        break;
-      }
-
-      switch (paletteID)
-      {
-      case 0x0c:
-      case 0x18:
-      case 0x21:
-      case 0x22:
-        colorModel = 0x12; // L*a*b
-        break;
-      default:
-        break;
-      }
+      tmpColor.m_colorModel = 0x19;
+      tmpColor.m_colorPalette = 0x1e;
     }
     else
     {
-      input->seek(6, librevenge::RVNG_SEEK_CUR);
-      colorValue = readU32(input);
+      tmpColor.m_colorPalette = readU16(input);
+      input->seek(4, librevenge::RVNG_SEEK_CUR);
     }
+    tmpColor.m_colorValue = readU32(input);
+
   }
   else if (m_version >= 400)
   {
-    colorModel = readU16(input);
+    tmpColor.m_colorModel = readU16(input);
     unsigned short c = readU16(input);
     unsigned short m = readU16(input);
     unsigned short y = readU16(input);
     unsigned short k = readU16(input);
-    colorValue = (k & 0xff);
-    colorValue <<= 8;
-    colorValue |= (y & 0xff);
-    colorValue <<= 8;
-    colorValue |= (m & 0xff);
-    colorValue <<= 8;
-    colorValue |= (c & 0xff);
+    tmpColor.m_colorValue = (k & 0xff);
+    tmpColor.m_colorValue <<= 8;
+    tmpColor.m_colorValue |= (y & 0xff);
+    tmpColor.m_colorValue <<= 8;
+    tmpColor.m_colorValue |= (m & 0xff);
+    tmpColor.m_colorValue <<= 8;
+    tmpColor.m_colorValue |= (c & 0xff);
     input->seek(2, librevenge::RVNG_SEEK_CUR);
   }
   else
   {
-    colorModel = readU8(input);
-    colorValue = readU32(input);
+    tmpColor.m_colorModel = readU8(input);
+    tmpColor.m_colorValue = readU32(input);
   }
 
-  CDR_DEBUG_MSG(("CDRParser::redColor --> colorModel 0x%x -- colorValue 0x%x\n", colorModel, colorValue));
+  _resolveColorPalette(tmpColor);
 
-  return libcdr::CDRColor(colorModel, colorValue);
+  return tmpColor;
 }
 
 void libcdr::CDRParser::readRectangle(librevenge::RVNGInputStream *input)
@@ -1861,8 +1511,10 @@ void libcdr::CDRParser::readFild(librevenge::RVNGInputStream *input, unsigned le
     else
       input->seek(1, librevenge::RVNG_SEEK_CUR);
     color1 = readColor(input);
-    if (m_version >= 1300)
+    if (m_version >= 1600)
       input->seek(31, librevenge::RVNG_SEEK_CUR);
+    else if (m_version >= 1300)
+      input->seek(10, librevenge::RVNG_SEEK_CUR);
     color2 = readColor(input);
     imageFill = libcdr::CDRImageFill(patternId, patternWidth, patternHeight, isRelative, tileOffsetX, tileOffsetY, rcpOffset, flags);
   }
@@ -1871,12 +1523,14 @@ void libcdr::CDRParser::readFild(librevenge::RVNGInputStream *input, unsigned le
   {
     if (m_version < 600)
       fillType = 10;
-    input->seek(2, librevenge::RVNG_SEEK_CUR);
-    unsigned patternId = readUnsigned(input);
-    if (m_version >= 1600)
-      input->seek(26, librevenge::RVNG_SEEK_CUR);
-    else if (m_version >= 1300)
+    if (m_version >= 1300)
+    {
+      _skipX3Optional(input);
+      input->seek(-4, librevenge::RVNG_SEEK_CUR);
+    }
+    else
       input->seek(2, librevenge::RVNG_SEEK_CUR);
+    unsigned patternId = readUnsigned(input);
     int tmpWidth = readUnsigned(input);
     int tmpHeight = readUnsigned(input);
     double tileOffsetX = 0.0;
@@ -1911,7 +1565,10 @@ void libcdr::CDRParser::readFild(librevenge::RVNGInputStream *input, unsigned le
   case 10: // Full color
   {
     if (m_version >= 1300)
-      input->seek(28, librevenge::RVNG_SEEK_CUR);
+    {
+      _skipX3Optional(input);
+      input->seek(-4, librevenge::RVNG_SEEK_CUR);
+    }
     else
       input->seek(2, librevenge::RVNG_SEEK_CUR);
     unsigned patternId = readUnsigned(input);
@@ -1951,7 +1608,10 @@ void libcdr::CDRParser::readFild(librevenge::RVNGInputStream *input, unsigned le
     if (m_version < 600)
       fillType = 10;
     if (m_version >= 1300)
-      input->seek(36, librevenge::RVNG_SEEK_CUR);
+    {
+      _skipX3Optional(input);
+      input->seek(-4, librevenge::RVNG_SEEK_CUR);
+    }
     else
       input->seek(2, librevenge::RVNG_SEEK_CUR);
     unsigned patternId = readU32(input);
@@ -2822,59 +2482,95 @@ void libcdr::CDRParser::readTxsm(librevenge::RVNGInputStream *input, unsigned le
       return readTxsm6(input);
     if (m_version >= 1600)
       return readTxsm16(input);
+
+    unsigned frameFlag = readU32(input);
+    input->seek(0x20, librevenge::RVNG_SEEK_CUR);
     if (m_version >= 1500)
-      input->seek(0x25, librevenge::RVNG_SEEK_CUR);
-    else
-      input->seek(0x24, librevenge::RVNG_SEEK_CUR);
-    if (readU32(input))
+      input->seek(1, librevenge::RVNG_SEEK_CUR);
+
+    if (m_version <= 700)
     {
-      if (m_version < 800)
-        input->seek(32, librevenge::RVNG_SEEK_CUR);
-    }
-    if (m_version < 800)
-      input->seek(4, librevenge::RVNG_SEEK_CUR);
-    unsigned textId = readU32(input);
-    input->seek(48, librevenge::RVNG_SEEK_CUR);
-    if (m_version >= 800)
-    {
-      if (readU32(input))
+      unsigned textOnPath = readU32(input);
+
+      if (textOnPath == 1)
       {
-        input->seek(32, librevenge::RVNG_SEEK_CUR);
-        if (m_version >= 1300)
-          input->seek(8, librevenge::RVNG_SEEK_CUR);
+        input->seek(4, librevenge::RVNG_SEEK_CUR); // var1
+        input->seek(4, librevenge::RVNG_SEEK_CUR); // var3
+        input->seek(4, librevenge::RVNG_SEEK_CUR); // Offset
+        input->seek(4, librevenge::RVNG_SEEK_CUR); // var4
+        input->seek(4, librevenge::RVNG_SEEK_CUR); // Distance
+        input->seek(4, librevenge::RVNG_SEEK_CUR); // var5
+        input->seek(4, librevenge::RVNG_SEEK_CUR); // var6
+        input->seek(4, librevenge::RVNG_SEEK_CUR); // var7
       }
     }
-    if (m_version >= 1500)
-      input->seek(12, librevenge::RVNG_SEEK_CUR);
-    unsigned num = readU32(input);
-    unsigned num4 = 1;
-    if (!num)
+
+    unsigned numFrames = readU32(input);
+    unsigned textId = 0;
+    for (unsigned i=0; i < numFrames; ++i)
     {
-      if (m_version >= 800)
+      unsigned frameId = readU32(input);
+      textId = frameId;
+      input->seek(48, librevenge::RVNG_SEEK_CUR);
+      if (m_version > 700)
+      {
+        unsigned textOnPath = readU32(input);
+        if (textOnPath == 1)
+        {
+          input->seek(4, librevenge::RVNG_SEEK_CUR); // var1
+          if (m_version > 1200)
+          {
+            input->seek(4, librevenge::RVNG_SEEK_CUR); // Orientation
+            input->seek(4, librevenge::RVNG_SEEK_CUR); // var2
+          }
+          input->seek(4, librevenge::RVNG_SEEK_CUR); // var3
+          input->seek(4, librevenge::RVNG_SEEK_CUR); // Offset
+          input->seek(4, librevenge::RVNG_SEEK_CUR); // var4
+          input->seek(4, librevenge::RVNG_SEEK_CUR); // Distance
+          input->seek(4, librevenge::RVNG_SEEK_CUR); // var5
+          input->seek(4, librevenge::RVNG_SEEK_CUR); // Mirror Vert
+          input->seek(4, librevenge::RVNG_SEEK_CUR); // Mirror Hor
+          if (m_version >= 1500)
+          {
+            input->seek(4, librevenge::RVNG_SEEK_CUR); // var6
+            input->seek(4, librevenge::RVNG_SEEK_CUR); // var7
+          }
+        }
+        else if (m_version >= 1500)
+          input->seek(8, librevenge::RVNG_SEEK_CUR);
+      }
+
+      if (!frameFlag)
+      {
+        if (m_version >= 1500)
+          input->seek(40, librevenge::RVNG_SEEK_CUR);
+        else if (m_version >= 1400)
+          input->seek(36, librevenge::RVNG_SEEK_CUR);
+        else if (m_version > 800)
+          input->seek(34, librevenge::RVNG_SEEK_CUR);
+        else if (m_version >= 800)
+          input->seek(32, librevenge::RVNG_SEEK_CUR);
+        else if (m_version >= 700)
+          input->seek(36, librevenge::RVNG_SEEK_CUR); // !!! txt-on-path is before frame, hence things are rearranged
+      }
+      else if (m_version >= 1500)
         input->seek(4, librevenge::RVNG_SEEK_CUR);
-      if (m_version > 800)
-        input->seek(2, librevenge::RVNG_SEEK_CUR);
-      if (m_version >= 1400)
-        input->seek(2, librevenge::RVNG_SEEK_CUR);
-      input->seek(24, librevenge::RVNG_SEEK_CUR);
-      if (m_version < 800)
-        input->seek(8, librevenge::RVNG_SEEK_CUR);
-      num4 = readU32(input);
     }
 
-    for (unsigned j = 0; j < num4 && getRemainingLength(input) >= 14; ++j)
+    unsigned numPara = readU32(input);
+
+    for (unsigned j = 0; j < numPara; ++j)
     {
       unsigned stlId = readU32(input);
-      if (m_version >= 1300 && num)
-        input->seek(1, librevenge::RVNG_SEEK_CUR);
       input->seek(1, librevenge::RVNG_SEEK_CUR);
-      unsigned numRecords = readU32(input);
+      if (m_version > 1200 && frameFlag)
+        input->seek(1, librevenge::RVNG_SEEK_CUR);
+
+      unsigned numStyles = readU32(input);
       std::map<unsigned, CDRStyle> styles;
-      unsigned i = 0;
-      for (i=0; i<numRecords && getRemainingLength(input) >= 3; ++i)
+      for (unsigned i = 0; i < numStyles; ++i)
       {
-        unsigned char fl0 = readU8(input);
-        readU8(input);
+        readU16(input); // num chars using this style
         unsigned char fl2 = readU8(input);
         unsigned char fl3 = 0;
         if (m_version >= 800)
@@ -2911,10 +2607,10 @@ void libcdr::CDRParser::readTxsm(librevenge::RVNGInputStream *input, unsigned le
           std::map<unsigned, CDRFillStyle>::const_iterator iter = m_fillStyles.find(fillId);
           if (iter != m_fillStyles.end())
             style.m_fillStyle = iter->second;
-          if (m_version >= 1600)
+          if (m_version >= 1300)
             input->seek(48, librevenge::RVNG_SEEK_CUR);
         }
-        if (fl2&0x80) // Font Outl Colour
+        if (fl2&0x80) // Font Outl ColourStld
         {
           unsigned outlId = readU32(input);
           std::map<unsigned, CDRLineStyle>::const_iterator iter = m_lineStyles.find(outlId);
@@ -2934,13 +2630,14 @@ void libcdr::CDRParser::readTxsm(librevenge::RVNGInputStream *input, unsigned le
         if (fl3&0x20) // Something
         {
           unsigned flag = readU8(input);
+          input->seek(-1, librevenge::RVNG_SEEK_CUR);
           if (flag)
-            input->seek(52, librevenge::RVNG_SEEK_CUR);
+          {
+            input->seek(4, librevenge::RVNG_SEEK_CUR); // ftil fild Id
+            if (m_version >= 1500)
+              input->seek(48, librevenge::RVNG_SEEK_CUR);
+          }
         }
-        if (fl0 == 0x02)
-          if (m_version >= 1300)
-            input->seek(48, librevenge::RVNG_SEEK_CUR);
-
         styles[2*i] = style;
       }
       unsigned numChars = readU32(input);
@@ -2948,7 +2645,7 @@ void libcdr::CDRParser::readTxsm(librevenge::RVNGInputStream *input, unsigned le
       if (numChars > getRemainingLength(input) / charSize)
         numChars = getRemainingLength(input) / charSize;
       std::vector<unsigned char> charDescriptions(numChars);
-      for (i=0; i<numChars; ++i)
+      for (unsigned i = 0; i < numChars; ++i)
       {
         unsigned tmpCharDescription = 0;
         if (m_version >= 1200)
@@ -2970,7 +2667,9 @@ void libcdr::CDRParser::readTxsm(librevenge::RVNGInputStream *input, unsigned le
       input->seek(1, librevenge::RVNG_SEEK_CUR); //skip the 0 ending character
 
       if (!textData.empty() || !styles.empty())
+      {
         m_collector->collectText(textId, stlId, textData, charDescriptions, styles);
+      }
     }
 #ifndef DEBUG
   }
@@ -2987,21 +2686,16 @@ void libcdr::CDRParser::readTxsm16(librevenge::RVNGInputStream *input)
   {
 #endif
     unsigned frameFlag = readU32(input);
-    input->seek(41, librevenge::RVNG_SEEK_CUR);
+    input->seek(37, librevenge::RVNG_SEEK_CUR);
 
-    unsigned textId = readU32(input);
+    unsigned numFrames = readU32(input);
 
-    input->seek(48, librevenge::RVNG_SEEK_CUR);
-    if (!frameFlag)
+    unsigned textId = 0;
+    for (unsigned i = 0; i < numFrames; ++i)
     {
-      input->seek(28, librevenge::RVNG_SEEK_CUR);
-      unsigned tlen = readU32(input);
-      if (m_version < 1700)
-        tlen *= 2;
-      input->seek(tlen + 4, librevenge::RVNG_SEEK_CUR);
-    }
-    else
-    {
+      unsigned frameId = readU32(input);
+      textId = frameId;
+      input->seek(48, librevenge::RVNG_SEEK_CUR);
       unsigned textOnPath = readU32(input);
       if (textOnPath == 1)
       {
@@ -3020,63 +2714,84 @@ void libcdr::CDRParser::readTxsm16(librevenge::RVNGInputStream *input)
       }
       else
         input->seek(8, librevenge::RVNG_SEEK_CUR);
-      input->seek(4, librevenge::RVNG_SEEK_CUR);
-    }
 
-    unsigned stlId = readU32(input);
-
-    if (frameFlag)
-      input->seek(1, librevenge::RVNG_SEEK_CUR);
-    input->seek(1, librevenge::RVNG_SEEK_CUR);
-
-    unsigned len2 = readU32(input);
-    if (m_version < 1700)
-      len2 *= 2;
-    CDRStyle defaultStyle;
-    _readX6StyleString(input, len2, defaultStyle);
-
-    unsigned numRecords = readU32(input);
-
-    unsigned i = 0;
-    std::map<unsigned, CDRStyle> styles;
-    for (i=0; i<numRecords && getRemainingLength(input) >= 17; ++i)
-    {
-      styles[i*2] = defaultStyle;
-      input->seek(4, librevenge::RVNG_SEEK_CUR);
-      unsigned flag = readU8(input);
-      input->seek(1, librevenge::RVNG_SEEK_CUR);
-      unsigned lenN = 0;
-      if (flag & 0x04)
+      if (!frameFlag)
       {
-        lenN = readU32(input);
-        lenN *= 2;
-        input->seek(lenN, librevenge::RVNG_SEEK_CUR);
+        input->seek(16, librevenge::RVNG_SEEK_CUR);
+        unsigned tlen = readU32(input);
+        if (m_version > 1600)
+          input->seek(tlen, librevenge::RVNG_SEEK_CUR);
+        else
+          input->seek(tlen*2, librevenge::RVNG_SEEK_CUR);
+
       }
-      lenN = readU32(input);
-      if (m_version < 1700)
-        lenN *= 2;
-      _readX6StyleString(input, lenN, styles[i*2]);
     }
 
-    unsigned numChars = readU32(input);
-    if (numChars > getRemainingLength(input) / 8)
-      numChars = getRemainingLength(input) / 8;
-    std::vector<unsigned char> charDescriptions(numChars);
-    for (i=0; i<numChars; ++i)
+    unsigned numPara = readU32(input);
+
+    for (unsigned j = 0; j < numPara; ++j)
     {
-      charDescriptions[i] = readU64(input);
-    }
-    unsigned numBytes = readU32(input);
-    unsigned long numBytesRead = 0;
-    const unsigned char *buffer = input->read(numBytes, numBytesRead);
-    if (numBytesRead != numBytes)
-      throw GenericException();
-    std::vector<unsigned char> textData(numBytesRead);
-    if (numBytesRead)
-      memcpy(&textData[0], buffer, numBytesRead);
 
-    if (!textData.empty())
-      m_collector->collectText(textId, stlId, textData, charDescriptions, styles);
+      unsigned stlId = readU32(input);
+
+      input->seek(1, librevenge::RVNG_SEEK_CUR);
+      if (frameFlag)
+        input->seek(1, librevenge::RVNG_SEEK_CUR);
+
+      unsigned styleLen = readU32(input);
+      if (m_version < 1700)
+        styleLen *= 2;
+      CDRStyle defaultStyle;
+      _readX6StyleString(input, styleLen, defaultStyle);
+
+      unsigned numRecords = readU32(input);
+
+      unsigned i = 0;
+      std::map<unsigned, CDRStyle> styles;
+      for (i=0; i<numRecords && getRemainingLength(input) >= 17; ++i)
+      {
+        styles[i*2] = defaultStyle;
+        input->seek(2, librevenge::RVNG_SEEK_CUR);
+        unsigned short stFlag1 = readU16(input);
+        unsigned short stFlag2 = readU16(input);
+        if (stFlag2 & 0x04)
+        {
+          // encoding
+          unsigned encLen = readU32(input);
+          encLen *= 2;
+          input->seek(encLen, librevenge::RVNG_SEEK_CUR);
+        }
+        if (stFlag1 || stFlag2 & 0x4)
+        {
+          unsigned jsonLen = readU32(input);
+          if (m_version < 1700)
+            jsonLen *= 2;
+          _readX6StyleString(input, jsonLen, styles[i*2]);
+        }
+      }
+
+      unsigned numChars = readU32(input);
+      std::vector<unsigned char> charDescriptions(numChars);
+      for (i=0; i<numChars; ++i)
+      {
+        unsigned tmpCharDescription = 0;
+        tmpCharDescription = readU64(input) & 0xffffffff;
+        charDescriptions[i] = (tmpCharDescription >> 16) | (tmpCharDescription & 0x01);
+      }
+      unsigned numBytes = readU32(input);
+      unsigned long numBytesRead = 0;
+      const unsigned char *buffer = input->read(numBytes, numBytesRead);
+      if (numBytesRead != numBytes)
+        throw GenericException();
+      std::vector<unsigned char> textData(numBytesRead);
+      if (numBytesRead)
+        memcpy(&textData[0], buffer, numBytesRead);
+      input->seek(1, librevenge::RVNG_SEEK_CUR); //skip the 0 ending character
+
+
+      if (!textData.empty())
+        m_collector->collectText(textId, stlId, textData, charDescriptions, styles);
+    }
 #ifndef DEBUG
   }
   catch (...)
@@ -3087,150 +2802,181 @@ void libcdr::CDRParser::readTxsm16(librevenge::RVNGInputStream *input)
 
 void libcdr::CDRParser::readTxsm6(librevenge::RVNGInputStream *input)
 {
-  unsigned fflag1 = readU32(input);
-  input->seek(0x20, librevenge::RVNG_SEEK_CUR);
-  unsigned textId = readU32(input);
-  input->seek(48, librevenge::RVNG_SEEK_CUR);
-  input->seek(4, librevenge::RVNG_SEEK_CUR);
-  if (!fflag1)
-    input->seek(8, librevenge::RVNG_SEEK_CUR);
-  unsigned stlId = readU32(input);
-  unsigned numSt = readU32(input);
-  unsigned i = 0;
-  std::map<unsigned, CDRStyle> styles;
-  for (; i<numSt && getRemainingLength(input) >= 58; ++i)
+  unsigned frameFlag = readU32(input);
+  input->seek(0x18, librevenge::RVNG_SEEK_CUR);
+  unsigned textOnPath = readU32(input);
+
+  if (textOnPath == 1)
   {
-    CDRStyle style;
-    unsigned char flag = readU8(input);
-    input->seek(3, librevenge::RVNG_SEEK_CUR);
-    if (flag&0x01)
+    input->seek(4, librevenge::RVNG_SEEK_CUR); // var1
+    input->seek(4, librevenge::RVNG_SEEK_CUR); // var3
+    input->seek(4, librevenge::RVNG_SEEK_CUR); // Offset
+    input->seek(4, librevenge::RVNG_SEEK_CUR); // var4
+    input->seek(4, librevenge::RVNG_SEEK_CUR); // Distance
+    input->seek(4, librevenge::RVNG_SEEK_CUR); // var5
+    input->seek(4, librevenge::RVNG_SEEK_CUR); // var6
+    input->seek(4, librevenge::RVNG_SEEK_CUR); // var7
+  }
+
+  unsigned numFrames = readU32(input);
+  unsigned textId = 0;
+  for (unsigned j=0; j<numFrames; ++j)
+  {
+    textId = readU32(input); // Frame Id
+    input->seek(48, librevenge::RVNG_SEEK_CUR); // Trafo 6*8 bytes
+    if (!frameFlag)
+      input->seek(8, librevenge::RVNG_SEEK_CUR); // Maybe flags
+  }
+  unsigned numPara = readU32(input);
+  for (unsigned j=0; j<numPara; ++j)
+  {
+    unsigned stlId = readU32(input);
+    unsigned numSt = readU32(input);
+    std::map<unsigned, CDRStyle> styles;
+    for (unsigned i=0; i<numSt; ++i)
     {
-      unsigned short fontId = readU16(input);
-      std::map<unsigned, CDRFont>::const_iterator iterFont = m_fonts.find(fontId);
-      if (iterFont != m_fonts.end())
+      CDRStyle style;
+
+      unsigned char flag = readU8(input);
+      input->seek(3, librevenge::RVNG_SEEK_CUR);
+      if (flag&0x01)
       {
-        style.m_fontName = iterFont->second.m_name;
-        style.m_charSet = iterFont->second.m_encoding;
+        unsigned short fontId = readU16(input);
+        std::map<unsigned, CDRFont>::const_iterator iterFont = m_fonts.find(fontId);
+        if (iterFont != m_fonts.end())
+        {
+          style.m_fontName = iterFont->second.m_name;
+          style.m_charSet = iterFont->second.m_encoding;
+        }
+        unsigned short charSet = readU16(input);
+        if (charSet)
+          style.m_charSet = charSet;
       }
-      unsigned short charSet = readU16(input);
-      if (charSet)
-        style.m_charSet = charSet;
-    }
-    else
+      else
+        input->seek(4, librevenge::RVNG_SEEK_CUR);
       input->seek(4, librevenge::RVNG_SEEK_CUR);
-    input->seek(4, librevenge::RVNG_SEEK_CUR);
-    if (flag&0x04)
-      style.m_fontSize = readCoordinate(input);
-    else
-      input->seek(4, librevenge::RVNG_SEEK_CUR);
-    input->seek(44, librevenge::RVNG_SEEK_CUR);
-    if (flag&0x10)
-    {
-      unsigned fillId = readU32(input);
-      std::map<unsigned, CDRFillStyle>::const_iterator iter = m_fillStyles.find(fillId);
-      if (iter != m_fillStyles.end())
-        style.m_fillStyle = iter->second;
+      if (flag&0x04)
+        style.m_fontSize = readCoordinate(input);
+      else
+        input->seek(4, librevenge::RVNG_SEEK_CUR);
+      input->seek(44, librevenge::RVNG_SEEK_CUR);
+      if (flag&0x10)
+      {
+        unsigned fillId = readU32(input);
+        std::map<unsigned, CDRFillStyle>::const_iterator iter = m_fillStyles.find(fillId);
+        if (iter != m_fillStyles.end())
+          style.m_fillStyle = iter->second;
+      }
+      if (flag&0x20)
+      {
+        unsigned outlId = readU32(input);
+        std::map<unsigned, CDRLineStyle>::const_iterator iter = m_lineStyles.find(outlId);
+        if (iter != m_lineStyles.end())
+          style.m_lineStyle = iter->second;
+      }
+      styles[2*i] = style;
     }
-    if (flag&0x20)
-    {
-      unsigned outlId = readU32(input);
-      std::map<unsigned, CDRLineStyle>::const_iterator iter = m_lineStyles.find(outlId);
-      if (iter != m_lineStyles.end())
-        style.m_lineStyle = iter->second;
-    }
-    styles[2*i] = style;
-  }
-  unsigned numChars = readU32(input);
-  if (numChars > getRemainingLength(input) / 12)
-    numChars = getRemainingLength(input) / 12;
-  std::vector<unsigned char> textData;
-  std::vector<unsigned char> charDescriptions;
-  textData.reserve(numChars);
-  charDescriptions.reserve(numChars);
-  for (i=0; i<numChars; ++i)
-  {
+    unsigned numChars = readU32(input);
     input->seek(4, librevenge::RVNG_SEEK_CUR);
-    textData.push_back(readU8(input));
-    input->seek(5, librevenge::RVNG_SEEK_CUR);
-    charDescriptions.push_back(readU8(input) << 1);
-    input->seek(1, librevenge::RVNG_SEEK_CUR);
+    std::vector<unsigned char> textData;
+    std::vector<unsigned char> charDescriptions;
+    textData.reserve(numChars);
+    charDescriptions.reserve(numChars);
+    for (unsigned i=0; i<numChars; ++i)
+    {
+      textData.push_back(readU8(input));
+      input->seek(5, librevenge::RVNG_SEEK_CUR);
+      charDescriptions.push_back(readU8(input) << 1);
+      input->seek(5, librevenge::RVNG_SEEK_CUR);
+    }
+    if (!textData.empty())
+      m_collector->collectText(textId, stlId, textData, charDescriptions, styles);
   }
-  if (!textData.empty())
-    m_collector->collectText(textId, stlId, textData, charDescriptions, styles);
 }
 
 void libcdr::CDRParser::readTxsm5(librevenge::RVNGInputStream *input)
 {
-  input->seek(4, librevenge::RVNG_SEEK_CUR);
-  unsigned textId = readU16(input);
-  input->seek(4, librevenge::RVNG_SEEK_CUR);
-  unsigned stlId = readU16(input);
-  unsigned numSt = readU16(input);
-  unsigned i = 0;
-  std::map<unsigned, CDRStyle> styles;
-  for (; i<numSt && getRemainingLength(input) >= 34; ++i)
+  input->seek(2, librevenge::RVNG_SEEK_CUR);
+  unsigned numFrames = readU16(input);
+  unsigned textId = 0;
+  for (unsigned j=0; j<numFrames; ++j)
   {
-    CDRStyle style;
-    unsigned char flag = readU8(input);
-    input->seek(1, librevenge::RVNG_SEEK_CUR);
-    if (flag&0x01)
-    {
-      unsigned short fontId = readU8(input);
-      std::map<unsigned, CDRFont>::const_iterator iterFont = m_fonts.find(fontId);
-      if (iterFont != m_fonts.end())
-      {
-        style.m_fontName = iterFont->second.m_name;
-        style.m_charSet = iterFont->second.m_encoding;
-      }
-      unsigned short charSet = readU8(input);
-      if (charSet)
-        style.m_charSet = charSet;
-    }
-    else
-      input->seek(2, librevenge::RVNG_SEEK_CUR);
-    input->seek(6, librevenge::RVNG_SEEK_CUR);
-    if (flag&0x04)
-      style.m_fontSize = readCoordinate(input);
-    else
-      input->seek(2, librevenge::RVNG_SEEK_CUR);
+    textId = readU16(input); // Bogus, not really needed and it is frame Id anyway
+    /* Possibly flags that might indicate frame styles, and the structure might
+       be of variable length, but for the while we have seen only zeros in those two
+       bytes in the documents we have. */
     input->seek(2, librevenge::RVNG_SEEK_CUR);
-    if (flag&0x10)
-    {
-      unsigned fillId = readU32(input);
-      std::map<unsigned, CDRFillStyle>::const_iterator iter = m_fillStyles.find(fillId);
-      if (iter != m_fillStyles.end())
-        style.m_fillStyle = iter->second;
-    }
-    else
-      input->seek(4, librevenge::RVNG_SEEK_CUR);
-    if (flag&0x20)
-    {
-      unsigned outlId = readU32(input);
-      std::map<unsigned, CDRLineStyle>::const_iterator iter = m_lineStyles.find(outlId);
-      if (iter != m_lineStyles.end())
-        style.m_lineStyle = iter->second;
-    }
-    else
-      input->seek(4, librevenge::RVNG_SEEK_CUR);
-    input->seek(14, librevenge::RVNG_SEEK_CUR);
-    styles[2*i] = style;
   }
-  unsigned numChars = readU16(input);
-  if (numChars > getRemainingLength(input) / 8)
-    numChars = getRemainingLength(input) / 8;
-  std::vector<unsigned char> textData;
-  std::vector<unsigned char> charDescriptions;
-  textData.reserve(numChars);
-  charDescriptions.reserve(numChars);
-  for (i=0; i<numChars; ++i)
+  unsigned numPara = readU16(input);
+  for (unsigned j=0; j<numPara; ++j)
   {
-    input->seek(4, librevenge::RVNG_SEEK_CUR);
-    textData.push_back(readU8(input));
-    input->seek(1, librevenge::RVNG_SEEK_CUR);
-    charDescriptions.push_back((readU16(input) >> 3) & 0xff);
+    unsigned stlId = readU16(input);
+    unsigned numSt = readU16(input);
+    std::map<unsigned, CDRStyle> styles;
+    for (unsigned i= 0; i<numSt /* && getRemainingLength(input) >= 34 */; ++i)
+    {
+      CDRStyle style;
+      unsigned char flag = readU8(input);
+      input->seek(1, librevenge::RVNG_SEEK_CUR);
+      if (flag&0x01)
+      {
+        unsigned short fontId = readU8(input);
+        std::map<unsigned, CDRFont>::const_iterator iterFont = m_fonts.find(fontId);
+        if (iterFont != m_fonts.end())
+        {
+          style.m_fontName = iterFont->second.m_name;
+          style.m_charSet = iterFont->second.m_encoding;
+        }
+        unsigned short charSet = readU8(input);
+        if (charSet)
+          style.m_charSet = charSet;
+      }
+      else
+        input->seek(2, librevenge::RVNG_SEEK_CUR);
+      input->seek(6, librevenge::RVNG_SEEK_CUR);
+      if (flag&0x04)
+        style.m_fontSize = readCoordinate(input);
+      else
+        input->seek(2, librevenge::RVNG_SEEK_CUR);
+      input->seek(2, librevenge::RVNG_SEEK_CUR);
+      if (flag&0x10)
+      {
+        unsigned fillId = readU32(input);
+        std::map<unsigned, CDRFillStyle>::const_iterator iter = m_fillStyles.find(fillId);
+        if (iter != m_fillStyles.end())
+          style.m_fillStyle = iter->second;
+      }
+      else
+        input->seek(4, librevenge::RVNG_SEEK_CUR);
+      if (flag&0x20)
+      {
+        unsigned outlId = readU32(input);
+        std::map<unsigned, CDRLineStyle>::const_iterator iter = m_lineStyles.find(outlId);
+        if (iter != m_lineStyles.end())
+          style.m_lineStyle = iter->second;
+      }
+      else
+        input->seek(4, librevenge::RVNG_SEEK_CUR);
+      input->seek(14, librevenge::RVNG_SEEK_CUR);
+      styles[2*i] = style;
+    }
+    unsigned numChars = readU16(input);
+    if (numChars > getRemainingLength(input) / 8)
+      numChars = getRemainingLength(input) / 8;
+    std::vector<unsigned char> textData;
+    std::vector<unsigned char> charDescriptions;
+    textData.reserve(numChars);
+    charDescriptions.reserve(numChars);
+    for (unsigned i=0; i<numChars; ++i)
+    {
+      input->seek(4, librevenge::RVNG_SEEK_CUR);
+      textData.push_back(readU8(input));
+      input->seek(1, librevenge::RVNG_SEEK_CUR);
+      charDescriptions.push_back((readU16(input) >> 3) & 0xff);
+    }
+    if (!textData.empty())
+      m_collector->collectText(textId, stlId, textData, charDescriptions, styles);
   }
-  if (!textData.empty())
-    m_collector->collectText(textId, stlId, textData, charDescriptions, styles);
 }
 
 void libcdr::CDRParser::readUdta(librevenge::RVNGInputStream *input)
@@ -3388,22 +3134,26 @@ void libcdr::CDRParser::_readX6StyleString(librevenge::RVNGInputStream *input, u
     memcpy(&styleBuffer[0], tmpBuffer, numBytesRead);
   librevenge::RVNGString styleString;
   if (m_version >= 1700)
-    libcdr::appendCharacters(styleString, styleBuffer, 0);
+    libcdr::appendUTF8Characters(styleString, styleBuffer);
   else
     libcdr::appendCharacters(styleString, styleBuffer);
   CDR_DEBUG_MSG(("CDRParser::_readX6StyleString - styleString = \"%s\"\n", styleString.cstr()));
 
   boost::property_tree::ptree pt;
+#ifndef DEBUG
   try
+#endif
   {
     std::stringstream ss;
     ss << styleString.cstr();
     boost::property_tree::read_json(ss, pt);
   }
+#ifndef DEBUG
   catch (...)
   {
     return;
   }
+#endif
 
   if (pt.count("character"))
   {
@@ -3418,7 +3168,7 @@ void libcdr::CDRParser::_readX6StyleString(librevenge::RVNGInputStream *input, u
     if (!!fontSize)
       style.m_fontSize = (double)fontSize.get() / 254000.0;
 
-    if (pt.count("character.outline"))
+    if (!!pt.get_child_optional("character.outline"))
     {
       style.m_lineStyle.lineType = 0;
       boost::optional<unsigned> lineWidth = pt.get_optional<unsigned>("character.outline.width");
@@ -3429,10 +3179,11 @@ void libcdr::CDRParser::_readX6StyleString(librevenge::RVNGInputStream *input, u
       {
         double opacity = 1.0;
         parseColourString(color.get().c_str(), style.m_lineStyle.color, opacity);
+        _resolveColorPalette(style.m_lineStyle.color);
       }
     }
 
-    if (pt.count("character.fill"))
+    if (!!pt.get_child_optional("character.fill"))
     {
       boost::optional<unsigned short> type = pt.get_optional<unsigned short>("character.fill.type");
       if (!!type)
@@ -3442,12 +3193,14 @@ void libcdr::CDRParser::_readX6StyleString(librevenge::RVNGInputStream *input, u
       {
         double opacity = 1.0;
         parseColourString(color1.get().c_str(), style.m_fillStyle.color1, opacity);
+        _resolveColorPalette(style.m_fillStyle.color1);
       }
       boost::optional<std::string> color2 = pt.get_optional<std::string>("character.fill.primaryColor");
       if (!!color2)
       {
         double opacity = 1.0;
         parseColourString(color2.get().c_str(), style.m_fillStyle.color2, opacity);
+        _resolveColorPalette(style.m_fillStyle.color2);
       }
     }
   }
@@ -3460,5 +3213,462 @@ void libcdr::CDRParser::_readX6StyleString(librevenge::RVNGInputStream *input, u
   }
 }
 
+void libcdr::CDRParser::_skipX3Optional(librevenge::RVNGInputStream *input)
+{
+  if (m_version < 1300)
+    return;
+
+  bool goOut = false;
+
+  while (!goOut)
+  {
+    switch (readU32(input))
+    {
+    case 0x640:
+    {
+      unsigned length = readU32(input);
+      input->seek(length, librevenge::RVNG_SEEK_CUR);
+      break;
+    }
+    case 0x514:
+    {
+      input->seek(4, librevenge::RVNG_SEEK_CUR);
+      break;
+    }
+    default:
+    {
+      input->seek(-4, librevenge::RVNG_SEEK_CUR);
+      goOut = true;
+      break;
+    }
+    }
+  }
+}
+
+void libcdr::CDRParser::_resolveColorPalette(libcdr::CDRColor &color)
+{
+  CDR_DEBUG_MSG(("CDRParser::_resolveColorPalette --> model 0x%x -- palette 0x%x -- value 0x%x\n", color.m_colorModel, color.m_colorPalette, color.m_colorValue));
+
+  unsigned char r = 0;
+  unsigned char g = 0;
+  unsigned char b = 0;
+  unsigned char c = 0;
+  unsigned char m = 0;
+  unsigned char y = 0;
+  unsigned char k = 100;
+
+  unsigned short ix = color.m_colorValue & 0xffff;
+  unsigned short tint = (color.m_colorValue >> 16) & 0xffff;
+
+  if (color.m_colorModel == 0x19)
+  {
+    switch (color.m_colorPalette)
+    {
+    case 0x03:
+      if (ix > 0
+          && ix <= sizeof(palette_19_03_C)/sizeof(palette_19_03_C[0])
+          && ix <= sizeof(palette_19_03_M)/sizeof(palette_19_03_M[0])
+          && ix <= sizeof(palette_19_03_Y)/sizeof(palette_19_03_Y[0])
+          && ix <= sizeof(palette_19_03_K)/sizeof(palette_19_03_K[0]))
+      {
+        c = palette_19_03_C[ix-1];
+        m = palette_19_03_M[ix-1];
+        y = palette_19_03_Y[ix-1];
+        k = palette_19_03_K[ix-1];
+      }
+      break;
+    case 0x08:
+      if (ix > 0
+          && ix <= sizeof(palette_19_08_C)/sizeof(palette_19_08_C[0])
+          && ix <= sizeof(palette_19_08_M)/sizeof(palette_19_08_M[0])
+          && ix <= sizeof(palette_19_08_Y)/sizeof(palette_19_08_Y[0])
+          && ix <= sizeof(palette_19_08_K)/sizeof(palette_19_08_K[0]))
+      {
+        c = palette_19_08_C[ix-1];
+        m = palette_19_08_M[ix-1];
+        y = palette_19_08_Y[ix-1];
+        k = palette_19_08_K[ix-1];
+      }
+      break;
+    case 0x09:
+      if (ix > 0
+          && ix <= sizeof(palette_19_09_L)/sizeof(palette_19_09_L[0])
+          && ix <= sizeof(palette_19_09_A)/sizeof(palette_19_09_A[0])
+          && ix <= sizeof(palette_19_09_B)/sizeof(palette_19_09_B[0]))
+      {
+        color.m_colorValue = palette_19_09_B[ix-1];
+        color.m_colorValue <<= 8;
+        color.m_colorValue |= palette_19_09_A[ix-1];
+        color.m_colorValue <<= 8;
+        color.m_colorValue |= palette_19_09_L[ix-1];
+      }
+      break;
+    case 0x0a:
+      if (ix > 0
+          && ix <= sizeof(palette_19_0A_C)/sizeof(palette_19_0A_C[0])
+          && ix <= sizeof(palette_19_0A_M)/sizeof(palette_19_0A_M[0])
+          && ix <= sizeof(palette_19_0A_Y)/sizeof(palette_19_0A_Y[0])
+          && ix <= sizeof(palette_19_0A_K)/sizeof(palette_19_0A_K[0]))
+      {
+        c = palette_19_0A_C[ix-1];
+        m = palette_19_0A_M[ix-1];
+        y = palette_19_0A_Y[ix-1];
+        k = palette_19_0A_K[ix-1];
+      }
+      break;
+    case 0x0b:
+      if (ix > 0
+          && ix <= sizeof(palette_19_0B_C)/sizeof(palette_19_0B_C[0])
+          && ix <= sizeof(palette_19_0B_M)/sizeof(palette_19_0B_M[0])
+          && ix <= sizeof(palette_19_0B_Y)/sizeof(palette_19_0B_Y[0])
+          && ix <= sizeof(palette_19_0B_K)/sizeof(palette_19_0B_K[0]))
+      {
+        c = palette_19_0B_C[ix-1];
+        m = palette_19_0B_M[ix-1];
+        y = palette_19_0B_Y[ix-1];
+        k = palette_19_0B_K[ix-1];
+      }
+      break;
+    case 0x11:
+      if (ix > 0
+          && ix <= sizeof(palette_19_11_C)/sizeof(palette_19_11_C[0])
+          && ix <= sizeof(palette_19_11_M)/sizeof(palette_19_11_M[0])
+          && ix <= sizeof(palette_19_11_Y)/sizeof(palette_19_11_Y[0])
+          && ix <= sizeof(palette_19_11_K)/sizeof(palette_19_11_K[0]))
+      {
+        c = palette_19_11_C[ix-1];
+        m = palette_19_11_M[ix-1];
+        y = palette_19_11_Y[ix-1];
+        k = palette_19_11_K[ix-1];
+      }
+      break;
+    case 0x12:
+      if (ix > 0
+          && ix <= sizeof(palette_19_12_C)/sizeof(palette_19_12_C[0])
+          && ix <= sizeof(palette_19_12_M)/sizeof(palette_19_12_M[0])
+          && ix <= sizeof(palette_19_12_Y)/sizeof(palette_19_12_Y[0])
+          && ix <= sizeof(palette_19_12_K)/sizeof(palette_19_12_K[0]))
+      {
+        c = palette_19_12_C[ix-1];
+        m = palette_19_12_M[ix-1];
+        y = palette_19_12_Y[ix-1];
+        k = palette_19_12_K[ix-1];
+      }
+      break;
+    case 0x14:
+      if (ix > 0
+          && ix <= sizeof(palette_19_14_C)/sizeof(palette_19_14_C[0])
+          && ix <= sizeof(palette_19_14_M)/sizeof(palette_19_14_M[0])
+          && ix <= sizeof(palette_19_14_Y)/sizeof(palette_19_14_Y[0])
+          && ix <= sizeof(palette_19_14_K)/sizeof(palette_19_14_K[0]))
+      {
+        c = palette_19_14_C[ix-1];
+        m = palette_19_14_M[ix-1];
+        y = palette_19_14_Y[ix-1];
+        k = palette_19_14_K[ix-1];
+      }
+      break;
+    case 0x15:
+      if (ix > 0
+          && ix <= sizeof(palette_19_15_C)/sizeof(palette_19_15_C[0])
+          && ix <= sizeof(palette_19_15_M)/sizeof(palette_19_15_M[0])
+          && ix <= sizeof(palette_19_15_Y)/sizeof(palette_19_15_Y[0])
+          && ix <= sizeof(palette_19_15_K)/sizeof(palette_19_15_K[0]))
+      {
+        c = palette_19_15_C[ix-1];
+        m = palette_19_15_M[ix-1];
+        y = palette_19_15_Y[ix-1];
+        k = palette_19_15_K[ix-1];
+      }
+      break;
+    case 0x16:
+      if (ix > 0
+          && ix <= sizeof(palette_19_16_C)/sizeof(palette_19_16_C[0])
+          && ix <= sizeof(palette_19_16_M)/sizeof(palette_19_16_M[0])
+          && ix <= sizeof(palette_19_16_Y)/sizeof(palette_19_16_Y[0])
+          && ix <= sizeof(palette_19_16_K)/sizeof(palette_19_16_K[0]))
+      {
+        c = palette_19_16_C[ix-1];
+        m = palette_19_16_M[ix-1];
+        y = palette_19_16_Y[ix-1];
+        k = palette_19_16_K[ix-1];
+      }
+      break;
+    case 0x17:
+      if (ix > 0
+          && ix <= sizeof(palette_19_17_C)/sizeof(palette_19_17_C[0])
+          && ix <= sizeof(palette_19_17_M)/sizeof(palette_19_17_M[0])
+          && ix <= sizeof(palette_19_17_Y)/sizeof(palette_19_17_Y[0])
+          && ix <= sizeof(palette_19_17_K)/sizeof(palette_19_17_K[0]))
+      {
+        c = palette_19_17_C[ix-1];
+        m = palette_19_17_M[ix-1];
+        y = palette_19_17_Y[ix-1];
+        k = palette_19_17_K[ix-1];
+      }
+      break;
+    case 0x1a:
+      if (ix < sizeof(palette_19_1A_C)/sizeof(palette_19_1A_C[0])
+          && ix < sizeof(palette_19_1A_M)/sizeof(palette_19_1A_M[0])
+          && ix < sizeof(palette_19_1A_Y)/sizeof(palette_19_1A_Y[0])
+          && ix < sizeof(palette_19_1A_K)/sizeof(palette_19_1A_K[0]))
+      {
+        c = palette_19_1A_C[ix];
+        m = palette_19_1A_M[ix];
+        y = palette_19_1A_Y[ix];
+        k = palette_19_1A_K[ix];
+      }
+      break;
+    case 0x1b:
+      if (ix < sizeof(palette_19_1B_C)/sizeof(palette_19_1B_C[0])
+          && ix < sizeof(palette_19_1B_M)/sizeof(palette_19_1B_M[0])
+          && ix < sizeof(palette_19_1B_Y)/sizeof(palette_19_1B_Y[0])
+          && ix < sizeof(palette_19_1B_K)/sizeof(palette_19_1B_K[0]))
+      {
+        c = palette_19_1B_C[ix];
+        m = palette_19_1B_M[ix];
+        y = palette_19_1B_Y[ix];
+        k = palette_19_1B_K[ix];
+      }
+      break;
+    case 0x1c:
+      if (ix < sizeof(palette_19_1C_C)/sizeof(palette_19_1C_C[0])
+          && ix < sizeof(palette_19_1C_M)/sizeof(palette_19_1C_M[0])
+          && ix < sizeof(palette_19_1C_Y)/sizeof(palette_19_1C_Y[0])
+          && ix < sizeof(palette_19_1C_K)/sizeof(palette_19_1C_K[0]))
+      {
+        c = palette_19_1C_C[ix];
+        m = palette_19_1C_M[ix];
+        y = palette_19_1C_Y[ix];
+        k = palette_19_1C_K[ix];
+      }
+      break;
+    case 0x1d:
+      if (ix < sizeof(palette_19_1D_C)/sizeof(palette_19_1D_C[0])
+          && ix < sizeof(palette_19_1D_M)/sizeof(palette_19_1D_M[0])
+          && ix < sizeof(palette_19_1D_Y)/sizeof(palette_19_1D_Y[0])
+          && ix < sizeof(palette_19_1D_K)/sizeof(palette_19_1D_K[0]))
+      {
+        c = palette_19_1D_C[ix];
+        m = palette_19_1D_M[ix];
+        y = palette_19_1D_Y[ix];
+        k = palette_19_1D_K[ix];
+      }
+      break;
+    case 0x1e:
+      if (ix > 0
+          && ix <= sizeof(palette_19_1E_R)/sizeof(palette_19_1E_R[0])
+          && ix <= sizeof(palette_19_1E_G)/sizeof(palette_19_1E_G[0])
+          && ix <= sizeof(palette_19_1E_B)/sizeof(palette_19_1E_B[0]))
+      {
+        r = palette_19_1E_R[ix-1];
+        g = palette_19_1E_G[ix-1];
+        b = palette_19_1E_B[ix-1];
+      }
+      break;
+    case 0x1f:
+      if (ix > 0
+          && ix <= sizeof(palette_19_1F_R)/sizeof(palette_19_1F_R[0])
+          && ix <= sizeof(palette_19_1F_G)/sizeof(palette_19_1F_G[0])
+          && ix <= sizeof(palette_19_1F_B)/sizeof(palette_19_1F_B[0]))
+      {
+        r = palette_19_1F_R[ix-1];
+        g = palette_19_1F_G[ix-1];
+        b = palette_19_1F_B[ix-1];
+      }
+      break;
+    case 0x20:
+      if (ix > 0
+          && ix <= sizeof(palette_19_20_R)/sizeof(palette_19_20_R[0])
+          && ix <= sizeof(palette_19_20_G)/sizeof(palette_19_20_G[0])
+          && ix <= sizeof(palette_19_20_B)/sizeof(palette_19_20_B[0]))
+      {
+        r = palette_19_20_R[ix-1];
+        g = palette_19_20_G[ix-1];
+        b = palette_19_20_B[ix-1];
+      }
+      break;
+    case 0x23:
+      if (ix > 0
+          && ix <= sizeof(palette_19_23_C)/sizeof(palette_19_23_C[0])
+          && ix <= sizeof(palette_19_23_M)/sizeof(palette_19_23_M[0])
+          && ix <= sizeof(palette_19_23_Y)/sizeof(palette_19_23_Y[0])
+          && ix <= sizeof(palette_19_23_K)/sizeof(palette_19_23_K[0]))
+      {
+        c = palette_19_23_C[ix-1];
+        m = palette_19_23_M[ix-1];
+        y = palette_19_23_Y[ix-1];
+        k = palette_19_23_K[ix-1];
+      }
+      break;
+    case 0x24:
+      if (ix > 0
+          && ix <= sizeof(palette_19_24_C)/sizeof(palette_19_24_C[0])
+          && ix <= sizeof(palette_19_24_M)/sizeof(palette_19_24_M[0])
+          && ix <= sizeof(palette_19_24_Y)/sizeof(palette_19_24_Y[0])
+          && ix <= sizeof(palette_19_24_K)/sizeof(palette_19_24_K[0]))
+      {
+        c = palette_19_24_C[ix-1];
+        m = palette_19_24_M[ix-1];
+        y = palette_19_24_Y[ix-1];
+        k = palette_19_24_K[ix-1];
+      }
+      break;
+    case 0x25:
+      if (ix > 0
+          && ix <= sizeof(palette_19_25_C)/sizeof(palette_19_25_C[0])
+          && ix <= sizeof(palette_19_25_M)/sizeof(palette_19_25_M[0])
+          && ix <= sizeof(palette_19_25_Y)/sizeof(palette_19_25_Y[0])
+          && ix <= sizeof(palette_19_25_K)/sizeof(palette_19_25_K[0]))
+      {
+        c = palette_19_25_C[ix-1];
+        m = palette_19_25_M[ix-1];
+        y = palette_19_25_Y[ix-1];
+        k = palette_19_25_K[ix-1];
+      }
+      break;
+    default:
+      break;
+    }
+
+    switch (color.m_colorPalette)
+    {
+    case 0x03:
+    case 0x08:
+    case 0x0a:
+    case 0x0b:
+    case 0x11:
+    case 0x12:
+    case 0x14:
+    case 0x15:
+    case 0x16:
+    case 0x17:
+    case 0x1a:
+    case 0x1b:
+    case 0x1c:
+    case 0x1d:
+    case 0x23:
+    case 0x24:
+    case 0x25:
+    {
+      color.m_colorModel = 0x02; // CMYK100
+      unsigned cyan = (unsigned)tint * (unsigned)c / 100;
+      unsigned magenta = (unsigned)tint * (unsigned)m / 100;
+      unsigned yellow = (unsigned)tint * (unsigned)y / 100;
+      unsigned black = (unsigned)tint * (unsigned)k / 100;
+      color.m_colorValue = (black & 0xff);
+      color.m_colorValue <<= 8;
+      color.m_colorValue |= (yellow & 0xff);
+      color.m_colorValue <<= 8;
+      color.m_colorValue |= (magenta & 0xff);
+      color.m_colorValue <<= 8;
+      color.m_colorValue |= (cyan & 0xff);
+      color.m_colorPalette = 0;
+      break;
+    }
+    case 0x1e:
+    case 0x1f:
+    case 0x20:
+    {
+      color.m_colorModel = 0x05; // RGB
+      unsigned red = (unsigned)tint * (unsigned)r + 255 * (100 - tint);
+      unsigned green = (unsigned)tint * (unsigned)g + 255 * (100 - tint);
+      unsigned blue = (unsigned)tint * (unsigned)b + 255 * (100 - tint);
+      red /= 100;
+      green /= 100;
+      blue /= 100;
+      color.m_colorValue = (red & 0xff);
+      color.m_colorValue <<= 8;
+      color.m_colorValue |= (green & 0xff);
+      color.m_colorValue <<= 8;
+      color.m_colorValue |= (blue & 0xff);
+      color.m_colorPalette = 0;
+      break;
+    }
+    case 0x09:
+      color.m_colorModel = 0x12; // L*a*b
+      color.m_colorPalette = 0;
+      break;
+    default:
+      break;
+    }
+  }
+  else if (color.m_colorModel == 0x0e)
+  {
+    switch (color.m_colorPalette)
+    {
+    case 0x0c:
+      if (ix > 0
+          && ix <= sizeof(palette_0E_0C_L)/sizeof(palette_0E_0C_L[0])
+          && ix <= sizeof(palette_0E_0C_A)/sizeof(palette_0E_0C_A[0])
+          && ix <= sizeof(palette_0E_0C_B)/sizeof(palette_0E_0C_B[0]))
+      {
+        color.m_colorValue = palette_0E_0C_B[ix-1];
+        color.m_colorValue <<= 8;
+        color.m_colorValue |= palette_0E_0C_A[ix-1];
+        color.m_colorValue <<= 8;
+        color.m_colorValue |= palette_0E_0C_L[ix-1];
+      }
+      break;
+    case 0x18:
+      if (ix > 0
+          && ix <= sizeof(palette_0E_18_L)/sizeof(palette_0E_18_L[0])
+          && ix <= sizeof(palette_0E_18_A)/sizeof(palette_0E_18_A[0])
+          && ix <= sizeof(palette_0E_18_B)/sizeof(palette_0E_18_B[0]))
+      {
+        color.m_colorValue = palette_0E_18_B[ix-1];
+        color.m_colorValue <<= 8;
+        color.m_colorValue |= palette_0E_18_A[ix-1];
+        color.m_colorValue <<= 8;
+        color.m_colorValue |= palette_0E_18_L[ix-1];
+      }
+      break;
+    case 0x21:
+      if (ix > 0
+          && ix <= sizeof(palette_0E_21_L)/sizeof(palette_0E_21_L[0])
+          && ix <= sizeof(palette_0E_21_A)/sizeof(palette_0E_21_A[0])
+          && ix <= sizeof(palette_0E_21_B)/sizeof(palette_0E_21_B[0]))
+      {
+        color.m_colorValue = palette_0E_21_B[ix-1];
+        color.m_colorValue <<= 8;
+        color.m_colorValue |= palette_0E_21_A[ix-1];
+        color.m_colorValue <<= 8;
+        color.m_colorValue |= palette_0E_21_L[ix-1];
+      }
+      break;
+    case 0x22:
+      if (ix > 0
+          && ix <= sizeof(palette_0E_22_L)/sizeof(palette_0E_22_L[0])
+          && ix <= sizeof(palette_0E_22_A)/sizeof(palette_0E_22_A[0])
+          && ix <= sizeof(palette_0E_22_B)/sizeof(palette_0E_22_B[0]))
+      {
+        color.m_colorValue = palette_0E_22_B[ix-1];
+        color.m_colorValue <<= 8;
+        color.m_colorValue |= palette_0E_22_A[ix-1];
+        color.m_colorValue <<= 8;
+        color.m_colorValue |= palette_0E_22_L[ix-1];
+      }
+      break;
+    default:
+      break;
+    }
+
+    switch (color.m_colorPalette)
+    {
+    case 0x0c:
+    case 0x18:
+    case 0x21:
+    case 0x22:
+      color.m_colorModel = 0x12; // L*a*b
+      color.m_colorPalette = 0;
+      break;
+    default:
+      break;
+    }
+  }
+
+  CDR_DEBUG_MSG(("CDRParser::_resolveColorPalette resolved --> model 0x%x -- palette 0x%x -- value 0x%x\n", color.m_colorModel, color.m_colorPalette, color.m_colorValue));
+
+}
 
 /* vim:set shiftwidth=2 softtabstop=2 expandtab: */

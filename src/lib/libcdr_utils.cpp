@@ -108,7 +108,7 @@ static unsigned short getEncoding(const unsigned char *buffer, unsigned bufferLe
     csd = ucsdet_open(&status);
     if (U_FAILURE(status) || !csd)
       return 0;
-    ucsdet_enableInputFilter(csd, TRUE);
+    ucsdet_enableInputFilter(csd, true);
     ucsdet_setText(csd, (const char *)buffer, bufferLength, &status);
     if (U_FAILURE(status))
       throw libcdr::EncodingException();
@@ -460,6 +460,15 @@ void libcdr::appendCharacters(librevenge::RVNGString &text, std::vector<unsigned
   }
   if (conv)
     ucnv_close(conv);
+}
+
+void libcdr::appendUTF8Characters(librevenge::RVNGString &text, std::vector<unsigned char> characters)
+{
+  if (characters.empty())
+    return;
+
+  for (std::vector<unsigned char>::const_iterator iter = characters.begin(); iter != characters.end(); ++iter)
+    text.append((char)*iter);
 }
 
 #ifdef DEBUG

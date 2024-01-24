@@ -1,3 +1,207 @@
+2021-03-26  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [0b06caf0ed750f1e817d446b1d7d7d79af45b218]
+
+	Sync the code closer with txsm16 in oletoy
+
+	Change-Id: I276a4b844418c2ffa818560bd8b93258d539dbaa
+
+2021-03-26  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [19eba0c9a6143a10ad847bf97da18806673df58f]
+
+	Fixes of txsm for 7 - 15
+
+	Change-Id: I212fa6a5a5243d57e6941d3398b20f830de4b26c
+
+2021-03-26  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [628c79ed597f720706b6a09a0426697ea1544687]
+
+	Fixes for text-on-path in txsm6
+
+	Change-Id: Iae442c48ea153436a9e588313d109b2f91acc06c
+
+2021-03-25  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [d9e6f53fad91ef2a8a2f7a6dd1776c2b779f34af]
+
+	silence warnings of newer boost in json parser
+
+	Change-Id: Icfbd31cb08c994c494758dcd86b72ea68b4f54b0
+
+2021-03-25  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [695586b02a9bf5e79c3e0865c9f1006595e15071]
+
+	Fixes for omnibus txsm
+
+	Change-Id: I227aef5ff9ef68f1a377181c6779358383971507
+
+2021-03-25  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [f14c31a18622db4930d43c3e38bc774815cd61fb]
+
+	Some advance in txsm6
+
+	Change-Id: Ib81df0f50fa81d0c9b573d5b276ea66d2212e9b2
+
+2021-03-25  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [5594f776dfef54e09780c62fca9cd85426a0b2d6]
+
+	Default style id for txsm5
+
+	Change-Id: Ia7ada38f62d17abebc3d7d29d023750aac4dd451
+
+2021-03-25  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [dc41748757362fb3166c2ad4f6a838921ccdb64c]
+
+	Some advance in txsm5
+
+	Change-Id: I52e03639bd8357cae4d1ad382089ddbf73512c7e
+
+2021-03-23  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [00c30046b1f85c814869544b1a79782a06f155bf]
+
+	Add debug output to see immediately if grammar fails
+
+	Change-Id: I46402402931dad2190ef8aa405dd146a2d0fcf16
+
+2021-03-23  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [878c3b55c3aef12b5b1d8ad2619644a0e062368e]
+
+	Fix the spirit grammar to cater for more cases
+
+	Change-Id: I8dd86e35c71e7657128ebd63a7cafe730c0daf47
+
+2021-03-22  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [d41d8f66957b3e2667e4781bffc1856627957fee]
+
+	Parse and use fallback colours if they exist
+
+	Change-Id: I970bfbe0c00032ad196dd06bf27d32e341afc3f6
+
+2021-03-22  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [3a811cc153c6bc79a017f163ac03d51b3f66506d]
+
+	Revert "use boost spirit in unicode when appropriate"
+
+	This reverts commit e2b0c8a788ec124a58a63ddc56d77fa317624bf5.
+
+2021-03-22  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [e2b0c8a788ec124a58a63ddc56d77fa317624bf5]
+
+	use boost spirit in unicode when appropriate
+
+	Change-Id: I9c97f3010ba7d4ec38dde0825e61fca6c7bce62e
+
+2021-03-22  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [9bbf5b653324ea567269b5ac18e09853dff4a0cd]
+
+	Read the json as utf-8 for versions 17+
+
+	Change-Id: I4fa754ba03be06594e421de1d03be25aec0e5c1e
+
+2021-03-22  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [0d36bda438c8c1e33ef9aada24a65d8bb8107c6c]
+
+	use the iso8859_1 to parse colours
+
+	The standard parser chokes on some characters due to conversion of
+	codes >127 into negative numbers
+
+	Change-Id: I3e5ac008376997c0b9b657016c293d5702bf75ec
+
+2021-03-22  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [528018f253d8e01cd5507eed1b3f852346887a5f]
+
+	A possible fix of multi-paragraph text in frame
+
+	Change-Id: I8a6a455b2dd57b9aa0d2fa3a0e3298f623f1586d
+
+2020-11-04  Miklos Vajna  <vmiklos@collabora.com>  [bf3e7f3bbc414d4341cf1420c99293debf1bd894]
+
+	Fix icu-68.1 build
+
+	This is really similar to LibreOffice core.git
+	<https://gerrit.libreoffice.org/c/core/+/105151>.
+
+	Change-Id: I91c5a9a5f573086d06428b16a459852d993ea31f
+
+2020-02-19  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [04b3c20882653adf4727a4dcf18fa1b577c0f20e]
+
+	Some more colour model and palette id mappings
+
+	Change-Id: Ic91d9631687208351d24d57677df834bc752523e
+
+2020-02-19  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [8378597beae61ef66807a0eaf56689e6de75c203]
+
+	Some progress with multiparagraph text in versions x6 and more
+
+	Change-Id: I4ecb2af0918bfe5a3f925ecf6e60cf72a2bbc282
+
+2020-02-19  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [900c54843680df8fe5c0209fd6935c2591b093f9]
+
+	Move debug messages inside the _resolveColorPalette function
+
+	Change-Id: I07aff123bf56d5202acca17233d525cf572a5ffc
+
+2020-02-19  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [637b22b22fa71ee2d6e58f4dc12792b2b2ae8ea0]
+
+	Some more palettes for text x6+
+
+	Change-Id: I614ce56b773b136aa2fb08fb5e527066cc352bd9
+
+2020-02-18  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [6d37a8e264957f28ff0b6016e91806ac6bb67fdf]
+
+	Resolve colour palettes for x6 text colours too
+
+	Change-Id: I88ba199fa77913e0bb075004f052bf8226efec52
+
+2020-02-18  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [9c123d71095d284fad32296b1d35b744878d33b1]
+
+	Extract palette resolution into a separate function
+
+	Change-Id: Ifd7e8c42c1ff2cd0986a467a27335af6b441b2f8
+
+2020-02-09  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [a44d6bc1e586e3035431bdf68a53cf0b3f5c7579]
+
+	Some progress of reading palettes in x16+ text colours
+
+	Change-Id: I6d08021d222b21c43cd0f29a1ed8d4aad21a45a5
+
+2020-02-06  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [2bdf2a9d5d2ef15c3af1434803d9b58b0bfa0a29]
+
+	Some more work on parsing CDRx6+ character colours
+
+	Change-Id: Ia80c4efe9b6c3282a9ee92d9b75c9c16e1bfdc50
+
+2020-02-06  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [ace7b9c22c91c9f3b89af5f09dd25e5ac1254bb3]
+
+	Typo in debug output
+
+	Change-Id: Ia7762b1946ba50d71a4d53bbcffb963701d3b320
+
+2020-02-06  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [f8f82291345d635bcdd3b6d757f6968cb552820d]
+
+	More robust parsing of x3 fills
+
+	Change-Id: Ib383d22dc33f494d69cee30f3b6100f1617cc034
+
+2020-02-05  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [0e746ed7ac28c2c1f4d480f52b6b7792ef1ce867]
+
+	Simplify the parseColourString function a bit
+
+	Change-Id: I000c8ad4dfdaa7cc250687d542284585e2a903ea
+
+2020-02-04  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [206178e5e978e4194cdfe42560aef3cd14088bcf]
+
+	Fix txsm reading for versions 16 and above
+
+	Change-Id: I7f03558e5aa5aa73fdb22f58d29eeb64342c198d
+
+2020-02-04  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [eb46ee4ca53fd37406ee71cb04edd260a9134622]
+
+	boost::property_tree::ptree::count does not recurse into children
+
+	Change-Id: I6892218152d14036b468826fc91f763787554ee3
+
+2020-02-04  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [4923f95bde2c07f33b645a298238cb79f615a016]
+
+	Extend colour string parsing to RBG255 model
+
+	Change-Id: I935d553727aef0e9ee21bac254c6fdc24349c93f
+
+2020-02-04  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [6ec73cd4131fbb4bc6a5e4b3401cea19d5fa406b]
+
+	astyle
+
+	Change-Id: Ibe31785f36920fc43de52833be25a1b82be9832c
+
+2020-02-03  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [01cc8560c9ab838f66ac7bbff43f18c537fb7503]
+
+	bump version
+
+	Change-Id: Ib9861375302237d2d96c32fea5604064c395f68d
+
 2020-02-02  Fridrich Štrba  <fridrich.strba@bluewin.ch>  [bd969c36b580f5de0cc30fe1badf4f1b8361c05d]
 
 	Fix txsm for version 15
